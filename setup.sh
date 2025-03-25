@@ -117,11 +117,13 @@ print_status "Configuring Tor service..."
 # Create Tor service override directory
 mkdir -p /etc/systemd/system/tor.service.d/
 
-# Create override.conf
+# Create override.conf with proper permissions
 cat > /etc/systemd/system/tor.service.d/override.conf << EOL
 [Service]
 User=debian-tor
 Group=debian-tor
+RuntimeDirectory=tor
+RuntimeDirectoryMode=0700
 EOL
 
 # Backup original torrc if it doesn't exist
@@ -129,22 +131,57 @@ if [ ! -f /etc/tor/torrc.backup ]; then
     cp /etc/tor/torrc /etc/tor/torrc.backup
 fi
 
-# Configure torrc
+# Configure torrc with more detailed settings
 cat > /etc/tor/torrc << EOL
 SocksPort 9052
 ControlPort 9053
 HashedControlPassword 16:01234567890ABCDEF01234567890ABCDEF01234567890ABCDEF01234567890ABCDEF
 DataDirectory /var/lib/tor
+Log notice file /var/log/tor/notices.log
+Log info file /var/log/tor/info.log
+RunAsDaemon 1
+User debian-tor
+Group debian-tor
 EOL
 
-# Restart Tor to apply new configuration
+# Set proper permissions for Tor directories
+print_status "Setting up Tor directories and permissions..."
+mkdir -p /var/lib/tor
+mkdir -p /var/log/tor
+chown -R debian-tor:debian-tor /var/lib/tor
+chown -R debian-tor:debian-tor /var/log/tor
+chmod 700 /var/lib/tor
+chmod 700 /var/log/tor
+
+# Ensure Tor service is enabled
+print_status "Enabling Tor service..."
+systemctl enable tor
+
+# Reload systemd and restart Tor
+print_status "Reloading systemd daemon..."
+systemctl daemon-reload
+
+print_status "Stopping Tor service..."
+systemctl stop tor
+sleep 2
+
 print_status "Starting Tor service..."
-systemctl restart tor
-sleep 3
+systemctl start tor
+sleep 5
 
 # Check if Tor is running
 if systemctl is-active --quiet tor; then
     print_success "Tor service is running"
+    # Check Tor logs for any issues
+    if [ -f "/var/log/tor/notices.log" ]; then
+        print_status "Checking Tor logs for issues..."
+        if grep -i "error\|warning\|failed" /var/log/tor/notices.log; then
+            print_error "Found issues in Tor logs"
+            cat /var/log/tor/notices.log
+        else
+            print_success "No issues found in Tor logs"
+        fi
+    fi
 else
     print_error "Tor service failed to start"
     print_status "Checking Tor logs..."
@@ -181,13 +218,33 @@ if check_port 9052; then
     print_success "Tor SOCKS port (9052) is listening"
 else
     print_error "Tor SOCKS port is not listening"
+    print_status "Checking Tor configuration..."
+    if [ -f "/var/log/tor/notices.log" ]; then
+        cat /var/log/tor/notices.log
+    fi
+    print_status "Checking Tor process..."
+    ps aux | grep tor
+    print_status "Checking Tor service status..."
+    systemctl status tor
     print_status "Waiting a bit longer and trying again..."
     sleep 5
     if check_port 9052; then
         print_success "Tor SOCKS port (9052) is now listening"
     else
         print_error "Tor SOCKS port is still not listening"
-        exit 1
+        print_status "Attempting to restart Tor service..."
+        systemctl restart tor
+        sleep 5
+        if check_port 9052; then
+            print_success "Tor SOCKS port (9052) is now listening"
+        else
+            print_error "Tor SOCKS port is still not listening"
+            print_status "Checking Tor configuration file..."
+            cat /etc/tor/torrc
+            print_status "Checking Tor service configuration..."
+            cat /etc/systemd/system/tor.service.d/override.conf
+            exit 1
+        fi
     fi
 fi
 
