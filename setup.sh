@@ -40,6 +40,15 @@ if ! command -v tor &> /dev/null; then
     apt-get update
     apt-get install -y tor
     print_success "Tor installed successfully"
+else
+    print_success "Tor installed successfully"
+fi
+
+# Install required tools
+print_status "Checking and installing required tools..."
+if ! command -v netstat &> /dev/null; then
+    apt-get install -y net-tools
+    print_success "net-tools (netstat) installed"
 fi
 
 # Create tor-control group if it doesn't exist
@@ -63,8 +72,8 @@ mkdir -p /etc/systemd/system/tor.service.d/
 # Create override.conf
 cat > /etc/systemd/system/tor.service.d/override.conf << EOL
 [Service]
-User=$ACTUAL_USER
-Group=$ACTUAL_USER
+User=debian-tor
+Group=debian-tor
 EOL
 
 # Backup original torrc if it doesn't exist
@@ -82,18 +91,39 @@ CookieAuthFileGroupReadable 1
 DataDirectory /var/lib/tor
 EOL
 
+# Restart Tor to generate the cookie file
+print_status "Starting Tor service to generate cookie file..."
+systemctl restart tor
+sleep 3
+
 # Set correct permissions
 print_status "Setting permissions..."
-chown -R "$ACTUAL_USER:$ACTUAL_USER" /var/lib/tor
-chmod 750 /var/lib/tor
-chown "$ACTUAL_USER:tor-control" /var/lib/tor/control_auth_cookie
-chmod 640 /var/lib/tor/control_auth_cookie
+# Make sure the directory and cookie file exist before modifying permissions
+if [ -d "/var/lib/tor" ]; then
+    # Ensure the tor service user (usually debian-tor) owns the directory
+    chown -R debian-tor:debian-tor /var/lib/tor
+    chmod 750 /var/lib/tor
+    
+    # Add the tor-control group as a supplementary group to the cookie file
+    if [ -f "/var/lib/tor/control_auth_cookie" ]; then
+        # Change group of cookie file to tor-control
+        chgrp tor-control /var/lib/tor/control_auth_cookie
+        chmod 640 /var/lib/tor/control_auth_cookie
+        print_success "Permissions set correctly"
+    else
+        print_error "Cookie file not found. Tor might not be configured correctly."
+        journalctl -u tor -n 20
+    fi
+else
+    print_error "Tor data directory not found"
+    exit 1
+fi
 
 # Reload systemd and restart Tor
 print_status "Restarting Tor service..."
 systemctl daemon-reload
 systemctl restart tor
-sleep 2
+sleep 3
 
 # Check if Tor is running
 if systemctl is-active --quiet tor; then
@@ -105,20 +135,58 @@ else
     exit 1
 fi
 
+# Function to check if a port is listening
+check_port() {
+    local port=$1
+    local command="netstat"
+    local args="-tuln"
+    
+    # If netstat is not available, try ss
+    if ! command -v netstat &> /dev/null; then
+        if command -v ss &> /dev/null; then
+            command="ss"
+            args="-tuln"
+        else
+            print_error "Neither netstat nor ss is available. Install net-tools or iproute2."
+            return 1
+        fi
+    fi
+    
+    if $command $args | grep -q ":$port "; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 # Verify SOCKS port is listening
-if netstat -tuln | grep -q ":9052 "; then
+if check_port 9052; then
     print_success "Tor SOCKS port (9052) is listening"
 else
     print_error "Tor SOCKS port is not listening"
-    exit 1
+    print_status "Waiting a bit longer and trying again..."
+    sleep 5
+    if check_port 9052; then
+        print_success "Tor SOCKS port (9052) is now listening"
+    else
+        print_error "Tor SOCKS port is still not listening"
+        exit 1
+    fi
 fi
 
 # Verify Control port is listening
-if netstat -tuln | grep -q ":9053 "; then
+if check_port 9053; then
     print_success "Tor Control port (9053) is listening"
 else
     print_error "Tor Control port is not listening"
-    exit 1
+    print_status "Waiting a bit longer and trying again..."
+    sleep 5
+    if check_port 9053; then
+        print_success "Tor Control port (9053) is now listening"
+    else
+        print_error "Tor Control port is still not listening"
+        exit 1
+    fi
 fi
 
 print_success "Setup completed successfully!"
