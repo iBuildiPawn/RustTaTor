@@ -22,7 +22,7 @@ print_error() {
 # Check if script is run with sudo
 if [ "$EUID" -ne 0 ]; then
     print_error "Please run this script with sudo"
-    exit 1
+    exit 2
 fi
 
 # Store the actual user who ran sudo
@@ -31,6 +31,9 @@ if [ -z "$ACTUAL_USER" ]; then
     print_error "Could not determine the actual user"
     exit 1
 fi
+
+# Get the actual user's home directory
+USER_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
 
 print_status "Setting up RustTaTor..."
 
@@ -49,6 +52,32 @@ print_status "Checking and installing required tools..."
 if ! command -v netstat &> /dev/null; then
     apt-get install -y net-tools
     print_success "net-tools (netstat) installed"
+fi
+
+# Install build dependencies
+print_status "Installing build dependencies..."
+apt-get install -y build-essential pkg-config libssl-dev curl
+print_success "Build dependencies installed"
+
+# Check if Rust is installed for the actual user
+if ! su - "$ACTUAL_USER" -c "command -v rustc" &> /dev/null; then
+    print_status "Rust is not installed. Installing Rust for $ACTUAL_USER..."
+    
+    # Install Rust using rustup (as the actual user)
+    su - "$ACTUAL_USER" -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+    
+    # Add Rust to PATH for this script session
+    if [ -f "$USER_HOME/.cargo/env" ]; then
+        su - "$ACTUAL_USER" -c "source $USER_HOME/.cargo/env"
+        print_success "Rust installed successfully"
+    else
+        print_error "Failed to install Rust. Please install manually using: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+        exit 1
+    fi
+else
+    print_success "Rust is already installed"
+    # Update Rust to ensure it's the latest version
+    su - "$ACTUAL_USER" -c "rustup update"
 fi
 
 # Create tor-control group if it doesn't exist
@@ -116,6 +145,45 @@ if [ -d "/var/lib/tor" ]; then
     fi
 else
     print_error "Tor data directory not found"
+    exit 1
+fi
+
+# Ensure the user is in the tor-control group
+if ! groups "$ACTUAL_USER" | grep -q "tor-control"; then
+    print_status "Adding user to tor-control group..."
+    usermod -a -G tor-control "$ACTUAL_USER"
+    print_success "User added to tor-control group"
+fi
+
+# Verify group membership
+print_status "Verifying group membership..."
+if groups "$ACTUAL_USER" | grep -q "tor-control"; then
+    print_success "User is in tor-control group"
+else
+    print_error "Failed to add user to tor-control group"
+    exit 1
+fi
+
+# Verify cookie file permissions
+print_status "Verifying cookie file permissions..."
+if [ -f "/var/lib/tor/control_auth_cookie" ]; then
+    COOKIE_GROUP=$(stat -c "%G" "/var/lib/tor/control_auth_cookie")
+    if [ "$COOKIE_GROUP" = "tor-control" ]; then
+        print_success "Cookie file group is set correctly"
+    else
+        print_error "Cookie file group is not set correctly"
+        exit 1
+    fi
+    
+    COOKIE_PERMS=$(stat -c "%a" "/var/lib/tor/control_auth_cookie")
+    if [ "$COOKIE_PERMS" = "640" ]; then
+        print_success "Cookie file permissions are set correctly"
+    else
+        print_error "Cookie file permissions are not set correctly"
+        exit 1
+    fi
+else
+    print_error "Cookie file not found"
     exit 1
 fi
 
@@ -189,6 +257,51 @@ else
     fi
 fi
 
+# Set up environment variables in user's profile
+print_status "Setting up environment variables..."
+ENV_FILE="$USER_HOME/.profile"
+
+# Check if we need to add Rust to PATH
+if ! grep -q "/.cargo/env" "$ENV_FILE"; then
+    cat >> "$ENV_FILE" << EOL
+
+# Rust environment
+if [ -f "$USER_HOME/.cargo/env" ]; then
+    . "$USER_HOME/.cargo/env"
+fi
+EOL
+    print_success "Added Rust to PATH in $ENV_FILE"
+fi
+
+# Add RustTaTor environment variables
+if ! grep -q "RUSTATOR_TOR_SOCKS_PORT" "$ENV_FILE"; then
+    cat >> "$ENV_FILE" << EOL
+
+# RustTaTor environment
+export RUSTATOR_TOR_SOCKS_PORT=9052
+export RUSTATOR_TOR_CONTROL_PORT=9053
+export RUSTATOR_TOR_COOKIE_PATH=/var/lib/tor/control_auth_cookie
+EOL
+    print_success "Added RustTaTor environment variables to $ENV_FILE"
+fi
+
+# Check if project dependencies are installed
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/Cargo.toml" ]; then
+    print_status "Building RustTaTor project..."
+    # Build the project as the actual user
+    cd "$SCRIPT_DIR"
+    su - "$ACTUAL_USER" -c "cd $SCRIPT_DIR && cargo build"
+    if [ $? -eq 0 ]; then
+        print_success "RustTaTor project built successfully"
+    else
+        print_error "Failed to build RustTaTor project. Please check Cargo.toml and dependencies."
+    fi
+else
+    print_status "Cargo.toml not found. Skipping project build."
+fi
+
 print_success "Setup completed successfully!"
 print_status "You may need to log out and log back in for group changes to take effect"
-print_status "To run RustTaTor, use: cargo run -- -s 9052 -c 9053" 
+print_status "Environment variables have been set in $ENV_FILE"
+print_status "To run RustTaTor, use: cargo run -- -s 9052 -c 9053"
