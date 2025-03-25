@@ -18,7 +18,7 @@ A blazingly fast Rust-powered Tor controller with automatic IP switching, real-t
 ### 1. Run Setup Script
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/rusttator.git
+git clone https://github.com/iBuildiPawn/RustTaTor.git
 cd rusttator
 
 # Run the setup script (requires sudo)
