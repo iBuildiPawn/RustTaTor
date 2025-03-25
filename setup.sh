@@ -126,8 +126,6 @@ RuntimeDirectory=tor
 RuntimeDirectoryMode=0700
 TimeoutStartSec=300
 TimeoutStopSec=60
-Restart=always
-RestartSec=10
 EOL
 
 # Backup original torrc if it doesn't exist
