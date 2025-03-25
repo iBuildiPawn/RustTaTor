@@ -37,27 +37,46 @@ USER_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
 
 print_status "Setting up RustTaTor..."
 
+# Update package list
+print_status "Updating package list..."
+apt-get update
+
+# Install prerequisites
+print_status "Installing prerequisites..."
+PREREQUISITES=(
+    "build-essential"
+    "pkg-config"
+    "libssl-dev"
+    "curl"
+    "git"
+    "net-tools"
+    "systemd"
+    "tor"
+)
+
+for pkg in "${PREREQUISITES[@]}"; do
+    if ! dpkg -l | grep -q "^ii  $pkg "; then
+        print_status "Installing $pkg..."
+        apt-get install -y "$pkg"
+        if [ $? -eq 0 ]; then
+            print_success "$pkg installed successfully"
+        else
+            print_error "Failed to install $pkg"
+            exit 1
+        fi
+    else
+        print_success "$pkg is already installed"
+    fi
+done
+
 # Check if Tor is installed
 if ! command -v tor &> /dev/null; then
     print_status "Tor is not installed. Installing Tor..."
-    apt-get update
     apt-get install -y tor
     print_success "Tor installed successfully"
 else
-    print_success "Tor installed successfully"
+    print_success "Tor is already installed"
 fi
-
-# Install required tools
-print_status "Checking and installing required tools..."
-if ! command -v netstat &> /dev/null; then
-    apt-get install -y net-tools
-    print_success "net-tools (netstat) installed"
-fi
-
-# Install build dependencies
-print_status "Installing build dependencies..."
-apt-get install -y build-essential pkg-config libssl-dev curl
-print_success "Build dependencies installed"
 
 # Check if Rust is installed for the actual user
 if ! su - "$ACTUAL_USER" -c "command -v rustc" &> /dev/null; then
