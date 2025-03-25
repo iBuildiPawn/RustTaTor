@@ -114,82 +114,12 @@ fi
 cat > /etc/tor/torrc << EOL
 SocksPort 9052
 ControlPort 9053
-CookieAuthentication 1
-CookieAuthFile /var/lib/tor/control_auth_cookie
-CookieAuthFileGroupReadable 1
+HashedControlPassword 16:01234567890ABCDEF01234567890ABCDEF01234567890ABCDEF01234567890ABCDEF
 DataDirectory /var/lib/tor
 EOL
 
-# Restart Tor to generate the cookie file
-print_status "Starting Tor service to generate cookie file..."
-systemctl restart tor
-sleep 3
-
-# Set correct permissions
-print_status "Setting permissions..."
-# Make sure the directory and cookie file exist before modifying permissions
-if [ -d "/var/lib/tor" ]; then
-    # Ensure the tor service user (usually debian-tor) owns the directory
-    chown -R debian-tor:debian-tor /var/lib/tor
-    chmod 750 /var/lib/tor
-    
-    # Add the tor-control group as a supplementary group to the cookie file
-    if [ -f "/var/lib/tor/control_auth_cookie" ]; then
-        # Change group of cookie file to tor-control
-        chgrp tor-control /var/lib/tor/control_auth_cookie
-        chmod 640 /var/lib/tor/control_auth_cookie
-        print_success "Permissions set correctly"
-    else
-        print_error "Cookie file not found. Tor might not be configured correctly."
-        journalctl -u tor -n 20
-    fi
-else
-    print_error "Tor data directory not found"
-    exit 1
-fi
-
-# Ensure the user is in the tor-control group
-if ! groups "$ACTUAL_USER" | grep -q "tor-control"; then
-    print_status "Adding user to tor-control group..."
-    usermod -a -G tor-control "$ACTUAL_USER"
-    print_success "User added to tor-control group"
-fi
-
-# Verify group membership
-print_status "Verifying group membership..."
-if groups "$ACTUAL_USER" | grep -q "tor-control"; then
-    print_success "User is in tor-control group"
-else
-    print_error "Failed to add user to tor-control group"
-    exit 1
-fi
-
-# Verify cookie file permissions
-print_status "Verifying cookie file permissions..."
-if [ -f "/var/lib/tor/control_auth_cookie" ]; then
-    COOKIE_GROUP=$(stat -c "%G" "/var/lib/tor/control_auth_cookie")
-    if [ "$COOKIE_GROUP" = "tor-control" ]; then
-        print_success "Cookie file group is set correctly"
-    else
-        print_error "Cookie file group is not set correctly"
-        exit 1
-    fi
-    
-    COOKIE_PERMS=$(stat -c "%a" "/var/lib/tor/control_auth_cookie")
-    if [ "$COOKIE_PERMS" = "640" ]; then
-        print_success "Cookie file permissions are set correctly"
-    else
-        print_error "Cookie file permissions are not set correctly"
-        exit 1
-    fi
-else
-    print_error "Cookie file not found"
-    exit 1
-fi
-
-# Reload systemd and restart Tor
-print_status "Restarting Tor service..."
-systemctl daemon-reload
+# Restart Tor to apply new configuration
+print_status "Starting Tor service..."
 systemctl restart tor
 sleep 3
 
@@ -280,7 +210,7 @@ if ! grep -q "RUSTATOR_TOR_SOCKS_PORT" "$ENV_FILE"; then
 # RustTaTor environment
 export RUSTATOR_TOR_SOCKS_PORT=9052
 export RUSTATOR_TOR_CONTROL_PORT=9053
-export RUSTATOR_TOR_COOKIE_PATH=/var/lib/tor/control_auth_cookie
+export RUSTATOR_TOR_CONTROL_PASSWORD=01234567890ABCDEF01234567890ABCDEF01234567890ABCDEF01234567890ABCDEF
 EOL
     print_success "Added RustTaTor environment variables to $ENV_FILE"
 fi
