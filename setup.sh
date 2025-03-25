@@ -124,6 +124,14 @@ User=debian-tor
 Group=debian-tor
 RuntimeDirectory=tor
 RuntimeDirectoryMode=0700
+Type=simple
+ExecStart=/usr/bin/tor -f /etc/tor/torrc
+ExecReload=/bin/kill -HUP \$MAINPID
+KillSignal=SIGINT
+TimeoutStartSec=300
+TimeoutStopSec=60
+Restart=always
+RestartSec=10
 EOL
 
 # Backup original torrc if it doesn't exist
@@ -133,8 +141,8 @@ fi
 
 # Configure torrc with more detailed settings
 cat > /etc/tor/torrc << EOL
-SocksPort 9052
-ControlPort 9053
+SocksPort 127.0.0.1:9052
+ControlPort 127.0.0.1:9053
 HashedControlPassword 16:01234567890ABCDEF01234567890ABCDEF01234567890ABCDEF01234567890ABCDEF
 DataDirectory /var/lib/tor
 Log notice file /var/log/tor/notices.log
@@ -186,6 +194,10 @@ else
     print_error "Tor service failed to start"
     print_status "Checking Tor logs..."
     journalctl -u tor -n 50
+    print_status "Checking Tor process..."
+    ps aux | grep tor
+    print_status "Checking Tor service status..."
+    systemctl status tor
     exit 1
 fi
 
@@ -213,6 +225,16 @@ check_port() {
     fi
 }
 
+# Function to check network interface
+check_network() {
+    print_status "Checking network interfaces..."
+    ip addr show
+    print_status "Checking localhost interface..."
+    ip addr show lo
+    print_status "Checking if localhost is up..."
+    ping -c 1 127.0.0.1
+}
+
 # Verify SOCKS port is listening
 if check_port 9052; then
     print_success "Tor SOCKS port (9052) is listening"
@@ -226,6 +248,7 @@ else
     ps aux | grep tor
     print_status "Checking Tor service status..."
     systemctl status tor
+    check_network
     print_status "Waiting a bit longer and trying again..."
     sleep 5
     if check_port 9052; then
@@ -243,6 +266,17 @@ else
             cat /etc/tor/torrc
             print_status "Checking Tor service configuration..."
             cat /etc/systemd/system/tor.service.d/override.conf
+            print_status "Checking system logs..."
+            journalctl -u tor -n 100
+            print_status "Checking if port is in use..."
+            lsof -i :9052
+            print_status "Checking firewall rules..."
+            if command -v ufw &> /dev/null; then
+                ufw status
+            fi
+            if command -v iptables &> /dev/null; then
+                iptables -L
+            fi
             exit 1
         fi
     fi
