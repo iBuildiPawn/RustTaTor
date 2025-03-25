@@ -123,9 +123,7 @@ cat > /etc/systemd/system/tor.service.d/override.conf << EOL
 User=debian-tor
 Group=debian-tor
 RuntimeDirectory=tor
-RuntimeDirectoryMode=0700
-TimeoutStartSec=300
-TimeoutStopSec=60
+RuntimeDirectoryMode=0755
 EOL
 
 # Backup original torrc if it doesn't exist
@@ -134,26 +132,37 @@ if [ ! -f /etc/tor/torrc.backup ]; then
 fi
 
 # Configure torrc with more detailed settings
+print_status "Generating Tor control password hash..."
+TOR_PASS="RustTaTorControlPass123"
+TOR_HASH=$(tor --hash-password "${TOR_PASS}" | tail -n 1)
+
 cat > /etc/tor/torrc << EOL
 SocksPort 127.0.0.1:9052
 ControlPort 127.0.0.1:9053
-HashedControlPassword 16:01234567890ABCDEF01234567890ABCDEF01234567890ABCDEF01234567890ABCDEF
+CookieAuthentication 1
+CookieAuthFile /run/tor/control.authcookie
+CookieAuthFileGroupReadable 1
 DataDirectory /var/lib/tor
 Log notice file /var/log/tor/notices.log
 Log info file /var/log/tor/info.log
 RunAsDaemon 1
 User debian-tor
-Group debian-tor
 EOL
 
 # Set proper permissions for Tor directories
 print_status "Setting up Tor directories and permissions..."
 mkdir -p /var/lib/tor
 mkdir -p /var/log/tor
+mkdir -p /run/tor
 chown -R debian-tor:debian-tor /var/lib/tor
 chown -R debian-tor:debian-tor /var/log/tor
-chmod 700 /var/lib/tor
-chmod 700 /var/log/tor
+chown -R debian-tor:debian-tor /run/tor
+chmod 755 /run/tor
+
+# Add user to debian-tor group for cookie access
+print_status "Adding user to debian-tor group..."
+usermod -a -G debian-tor "$ACTUAL_USER"
+print_success "User added to debian-tor group"
 
 # Ensure Tor service is enabled
 print_status "Enabling Tor service..."
@@ -170,6 +179,17 @@ sleep 2
 print_status "Starting Tor service..."
 systemctl start tor
 sleep 5
+
+# Verify cookie file permissions after Tor starts
+if [ -f "/run/tor/control.authcookie" ]; then
+    print_status "Setting cookie file permissions..."
+    chown debian-tor:debian-tor /run/tor/control.authcookie
+    chmod 640 /run/tor/control.authcookie
+    print_success "Cookie file permissions set"
+else
+    print_error "Cookie file not created by Tor"
+    exit 1
+fi
 
 # Check if Tor is running
 if systemctl is-active --quiet tor; then
@@ -314,7 +334,7 @@ if ! grep -q "RUSTATOR_TOR_SOCKS_PORT" "$ENV_FILE"; then
 # RustTaTor environment
 export RUSTATOR_TOR_SOCKS_PORT=9052
 export RUSTATOR_TOR_CONTROL_PORT=9053
-export RUSTATOR_TOR_CONTROL_PASSWORD=01234567890ABCDEF01234567890ABCDEF01234567890ABCDEF01234567890ABCDEF
+export RUSTATOR_TOR_CONTROL_PASSWORD="${TOR_PASS}"
 EOL
     print_success "Added RustTaTor environment variables to $ENV_FILE"
 fi
